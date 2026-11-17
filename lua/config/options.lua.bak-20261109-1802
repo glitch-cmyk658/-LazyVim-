@@ -1,0 +1,63 @@
+-- Pebrel speaks the Kitty graphics protocol including unicode placeholders (U=1).
+vim.env.SNACKS_KITTY = "1"
+-- Options are automatically loaded before lazy.nvim startup
+-- Default options that are always set: https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/config/options.lua
+-- Add any additional options here
+
+-- 4-space indentation everywhere (C/C++ style)
+vim.opt.shiftwidth = 4
+vim.opt.tabstop = 4
+vim.opt.softtabstop = 4
+vim.opt.expandtab = true
+
+-- WSL: 让 y/p 与 Windows 剪贴板互通
+-- 复制走 clip.exe（Windows 自带），粘贴走 ~/.local/bin/dsh-clip-paste（内部调用 PowerShell）
+if vim.fn.has("wsl") == 1 then
+  vim.g.clipboard = {
+    name = "WSL-clip",
+    copy = {
+      ["+"] = "clip.exe",
+      ["*"] = "clip.exe",
+    },
+    paste = {
+      ["+"] = vim.fn.expand("~/.local/bin/dsh-clip-paste"),
+      ["*"] = vim.fn.expand("~/.local/bin/dsh-clip-paste"),
+    },
+    cache_enabled = 0,
+  }
+end
+
+
+-- LazyVim 启动链里会把 clipboard 重置为空，这里在多个时机兜底同步
+if vim.fn.has("wsl") == 1 then
+  local function _sync_clipboard()
+    if vim.o.clipboard ~= "unnamedplus" then
+      vim.opt.clipboard = "unnamedplus"
+    end
+  end
+  vim.api.nvim_create_autocmd({ "VimEnter", "UIEnter", "BufEnter", "FileType" }, {
+    callback = _sync_clipboard,
+  })
+  -- VeryLazy 是 lazy.nvim 的 User 事件，不是 Neovim 事件，必须单独用 pattern 挂
+  vim.api.nvim_create_autocmd("User", {
+    pattern = "VeryLazy",
+    callback = _sync_clipboard,
+  })
+end
+
+-- 行尾光标：普通/可视模式下允许停在最后一个字符之后（和鼠标点击行尾一致）
+-- 只影响普通/可视模式，插入模式本来就可以在行尾之后输入
+vim.opt.virtualedit = "onemore"
+
+-- 不写交换文件：Pebrel 里关标签会直接杀掉 nvim，交换文件清不掉，
+-- 下次打开同一文件就会卡在 E325 swap file 提示上。
+-- 需要崩溃恢复时把下面这句改成 vim.opt.swapfile = true 即可。
+vim.opt.swapfile = false
+
+-- 背景透明：补全菜单 / 浮动窗口半透明（终端 opacity 由 Windows Terminal 负责）
+vim.opt.pumblend = 10
+vim.opt.winblend = 10
+
+-- 滚动留白：光标离窗口上下边缘还有几行时就开始滚屏
+-- LazyVim 默认 4（=4 行上下文），嫌光标要压到很下面才滚屏就调大这个数
+vim.opt.scrolloff = 10

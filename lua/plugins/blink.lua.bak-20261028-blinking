@@ -1,0 +1,40 @@
+return {
+  "saghen/blink.cmp",
+  opts = {
+    completion = {
+      -- 不预选：菜单弹出时不会高亮第一项，避免 Enter 误插入
+      list = { selection = { preselect = false } },
+    },
+    sources = {
+      -- 注释里不弹补全：默认的 buffer 源会把文件里出现过的词（包括你写的注释词）
+      -- 也当成候选，写注释时菜单一直闪。
+      -- 想改成"注释里只保留 LSP、去掉 buffer"：把 return {} 换成 { "lsp", "path", "snippets" }
+      default = function(_)
+        local ok, node = pcall(vim.treesitter.get_node)
+        if ok and node and vim.tbl_contains({ "comment", "line_comment", "block_comment" }, node:type()) then
+          return {}
+        end
+        return { "lsp", "path", "snippets", "buffer" }
+      end,
+    },
+    keymap = {
+      -- Tab：和 VSCode 一样，直接接受补全（没选中就用第一条）
+      --       菜单没开时退回 snippet 跳转 / 默认缩进
+      ["<Tab>"] = { "select_and_accept", "snippet_forward", "fallback" },
+      ["<S-Tab>"] = { "select_prev", "snippet_backward", "fallback" },
+
+      -- Enter：只有确实选中了某一项才接受补全；否则就是换行
+      ["<CR>"] = {
+        function(cmp)
+          if cmp.is_visible() and cmp.get_selected_item() ~= nil then
+            cmp.accept()
+            return true
+          end
+        end,
+        "fallback",
+      },
+
+      ["<C-y>"] = { "select_and_accept", "fallback" },
+    },
+  },
+}

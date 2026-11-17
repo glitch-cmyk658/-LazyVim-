@@ -1,0 +1,118 @@
+-- Keep document images visible in normal mode (Pebrel has no unicode
+-- placeholders, so snacks' inline mode is unavailable; we pin one float per
+-- visible image instead and tear them down as soon as the mode changes).
+local M = {}
+
+local floats = {}
+local last_key = nil
+
+local function close_all()
+  for _, f in ipairs(floats) do
+    pcall(function()
+      f.win:close()
+    end)
+    pcall(function()
+      f.img:close()
+    end)
+  end
+  floats = {}
+end
+
+local function render()
+  local key = table.concat({
+    tostring(vim.api.nvim_get_current_buf()),
+    tostring(vim.fn.line("w0")),
+    tostring(vim.fn.line("w$")),
+    tostring(vim.fn.winwidth(0)),
+    tostring(vim.fn.mode()),
+  }, ":")
+  if key == last_key then
+    return
+  end
+  last_key = key
+  pcall(close_all)
+  if vim.fn.mode() ~= "n" or vim.bo.filetype ~= "markdown" then
+    return
+  end
+  local buf = vim.api.nvim_get_current_buf()
+  local ok, doc = pcall(require, "snacks.image.doc")
+  if not ok or not doc.find_visible then
+    return
+  end
+  doc.find_visible(buf, function(imgs)
+    local lf = io.open("/tmp/nvim-persist.log", "a")
+    if lf then
+      lf:write(string.format("persist-log ft=%s buf=%d n=%d file=%s\n", tostring(vim.bo.filetype), buf, #imgs, vim.api.nvim_buf_get_name(buf)))
+      lf:close()
+    end
+    if vim.api.nvim_get_current_buf() ~= buf or vim.fn.mode() ~= "n" then
+      return
+    end
+    for _, img in ipairs(imgs) do
+      local sp = vim.fn.screenpos(0, img.pos[1], img.pos[2])
+      do
+        local f = io.open("/tmp/nvim-persist.log", "a")
+        if f then f:write(string.format("loop-log row=%s col=%s src=%s\n", tostring(sp and sp.row), tostring(sp and sp.col), tostring(img.src))) f:close() end
+      end
+      if sp and sp.row > 0 and sp.col > 0 then
+        local ok2, err2 = pcall(function()
+          local win = Snacks.win({
+            relative = "editor",
+            row = sp.row - 1,
+            col = sp.col - 1,
+            width = 1,
+            height = 1,
+            border = "none",
+            show = false,
+            enter = false,
+            focusable = false,
+            wo = { winblend = 0, wrap = false },
+          })
+          win:open_buf()
+          local placement
+          local opts = Snacks.config.merge({}, Snacks.image.config.doc, {
+            inline = false,
+            on_update_pre = function()
+              local st = placement and placement:state()
+              if st and st.loc then
+                win.opts.width = st.loc.width
+                win.opts.height = st.loc.height
+                win:show()
+              end
+            end,
+          })
+          placement = Snacks.image.placement.new(win.buf, img.src, opts)
+          do
+            local f = io.open("/tmp/nvim-persist.log", "a")
+            if f then f:write("placement=" .. tostring(placement ~= nil) .. "\n") f:close() end
+          end
+          if placement then
+            floats[#floats + 1] = { win = win, img = placement }
+          else
+            win:close()
+          end
+        end)
+        if not ok2 then
+          local ef = io.open("/tmp/nvim-persist.log", "a")
+          if ef then ef:write("err " .. tostring(err2) .. "\n"); ef:close() end
+        end
+      end
+    end
+  end)
+end
+
+local function schedule()
+  vim.schedule(render)
+end
+
+vim.api.nvim_create_autocmd({ "BufEnter", "BufWritePost", "CursorMoved", "ModeChanged", "VimResized" }, {
+  group = vim.api.nvim_create_augroup("user.image_persist", { clear = true }),
+  callback = schedule,
+})
+
+vim.api.nvim_create_autocmd("WinScrolled", {
+  group = "user.image_persist",
+  callback = schedule,
+})
+
+return {}

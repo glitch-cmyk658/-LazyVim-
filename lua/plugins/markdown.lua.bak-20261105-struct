@@ -1,0 +1,34 @@
+return {
+  -- markview.nvim: 全量 conceal 预览（旧主力），不支持 Markdown 里的 $...$ 公式。
+  -- 现在改用 render-markdown.nvim：normal 模式渲染（含 LaTeX → unicode），插入/可视模式回到源码。
+  {
+    "OXY2DEV/markview.nvim",
+    enabled = false,
+  },
+  {
+    "MeanderingProgrammer/render-markdown.nvim",
+    ft = { "markdown", "markdown.mdx" },
+    opts = {
+      -- 只在 normal / command 模式渲染；进插入、可视模式自动回源码
+      render_modes = { "n", "c" },
+      latex = {
+        -- 临时关掉公式渲染用于对比性能：RMD_LATEX=0 nvim file.md
+        enabled = vim.env.RMD_LATEX ~= "0",
+        -- latex2text-fast：docs/scripts/latex2text-fast.c 编译的带磁盘缓存包装器
+        -- （命中 ~2ms / 未命中回落到 latex2text ~58ms），公式多的文件首开不再卡死。
+        converter = { "latex2text-fast", "latex2text", "utftex" },
+      },
+    },
+    init = function()
+      -- latex2text 由 pip --user 装到 ~/.local/bin，非登录 shell 的 PATH 里不一定有
+      vim.env.PATH = vim.fn.expand("~/.local/bin") .. ":" .. vim.env.PATH
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = { "markdown", "markdown.mdx" },
+        callback = function()
+          vim.opt_local.conceallevel = 3
+          vim.opt_local.concealcursor = "nc"
+        end,
+      })
+    end,
+  },
+}

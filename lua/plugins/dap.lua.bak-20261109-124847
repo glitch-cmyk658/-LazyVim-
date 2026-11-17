@@ -1,0 +1,59 @@
+-- C/C++ 断点调试（nvim-dap + codelldb）
+-- 依赖：lazyvim.plugins.extras.dap.core（在 lua/config/lazy.lua 里导入）
+-- codelldb：mason 装（:MasonInstall codelldb），备用手动解压到 ~/.local/share/codelldb
+-- 按键：空格 d b 打/取消断点，空格 d c 开始/继续，空格 d i/o/O 单步，
+--       空格 d u 开关调试面板（变量/调用栈/断点/REPL），空格 d t 结束
+return {
+  {
+    "mfussenegger/nvim-dap",
+    opts = function()
+      local dap = require("dap")
+
+      local candidates = {
+        vim.fn.stdpath("data") .. "/mason/bin/codelldb",
+        vim.fn.expand("~/.local/share/codelldb/extension/adapter/codelldb"),
+      }
+      local adapter_bin = candidates[1]
+      for _, p in ipairs(candidates) do
+        if vim.fn.executable(p) == 1 then
+          adapter_bin = p
+          break
+        end
+      end
+
+      dap.adapters.codelldb = {
+        type = "server",
+        port = "${port}",
+        executable = {
+          command = adapter_bin,
+          args = { "--port", "${port}" },
+        },
+      }
+
+      -- 默认的可执行文件：同目录下和源文件同名的可执行文件，没有就让你填
+      local function pick_program()
+        local file = vim.api.nvim_buf_get_name(0)
+        local dir = vim.fn.fnamemodify(file, ":p:h")
+        local base = vim.fn.fnamemodify(file, ":t:r")
+        local guess = dir .. "/" .. base
+        if vim.fn.executable(guess) == 1 then
+          return guess
+        end
+        return vim.fn.input("可执行文件: ", dir .. "/a.out", "file")
+      end
+
+      for _, lang in ipairs({ "c", "cpp" }) do
+        dap.configurations[lang] = {
+          {
+            name = "启动当前程序（codelldb）",
+            type = "codelldb",
+            request = "launch",
+            program = pick_program,
+            cwd = "${workspaceFolder}",
+            stopOnEntry = false,
+          },
+        }
+      end
+    end,
+  },
+}

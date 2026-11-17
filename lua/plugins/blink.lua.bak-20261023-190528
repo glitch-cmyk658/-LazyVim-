@@ -1,0 +1,13 @@
+return {
+  "saghen/blink.cmp",
+  opts = {
+    completion = {
+      list = { selection = { preselect = false } },
+    },
+    keymap = {
+      -- <CR> 永远不"接受补全"，只负责换行；接受补全用 <C-y>
+      ["<CR>"] = false, -- 完全交给下面的插入模式映射
+      ["<C-y>"] = { "select_and_accept", "fallback" },
+    },
+  },
+}

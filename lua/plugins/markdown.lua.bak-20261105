@@ -1,0 +1,24 @@
+return {
+  -- render-markdown.nvim only decorates; markview.nvim does full conceal + hybrid mode.
+  { "MeanderingProgrammer/render-markdown.nvim", enabled = false },
+  {
+    "OXY2DEV/markview.nvim",
+    ft = "markdown",
+    opts = {
+      preview = {
+        modes = { "n", "no", "c" },
+        hybrid_modes = { "i" },
+        icon_provider = "devicons",
+      },
+    },
+    init = function()
+      vim.api.nvim_create_autocmd("FileType", {
+        pattern = { "markdown", "markdown.mdx" },
+        callback = function()
+          vim.opt_local.conceallevel = 3
+          vim.opt_local.concealcursor = "n"
+        end,
+      })
+    end,
+  },
+}

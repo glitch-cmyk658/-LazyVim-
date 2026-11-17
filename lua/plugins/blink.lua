@@ -1,0 +1,279 @@
+-- 注释里不弹补全提示（2026-11-16 用户要求）：
+-- 现象：写 `// ...` 注释时，buffer 源把文件里出现过的中文注释词当成候选，
+--        菜单 / 幽灵文本一直在光标下面闪，很吵。
+-- 规则：本行出现 `//`，或光标落在 `/* */` 块注释里 → blink 不再弹提示。
+-- 字符串不在此列：`#include` 等本来要靠 path 源补全（sources.default 里另有逻辑）。
+local function in_comment()
+  local ok, res = pcall(function()
+    local line = vim.api.nvim_get_current_line()
+    -- 用户规则是「本行出现 // 就关」，所以光标在 // 前面也算，避免写半行注释时闪。
+    if line:find("//", 1, true) then
+      return true
+    end
+    -- `error = false`：没装对应解析器时返回 nil 而不是抛错。
+    local parser = vim.treesitter.get_parser(0, nil, { error = false })
+    if not parser then
+      return false
+    end
+    parser:parse()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local row = cursor[1] - 1
+    -- 光标停在行尾时那个位置不属于任何 token，所以往前一个字节也查一次。
+    for _, col in ipairs({ cursor[2], cursor[2] - 1 }) do
+      if col >= 0 then
+        local node = vim.treesitter.get_node({ bufnr = 0, pos = { row, col } })
+        while node do
+          if node:type():find("comment", 1, true) then
+            return true
+          end
+          node = node:parent()
+        end
+      end
+    end
+    return false
+  end)
+  return ok and res
+end
+
+return {
+  "saghen/blink.cmp",
+  opts = {
+    -- 注释里彻底关掉补全（菜单 + 幽灵文本），离开注释自动恢复。
+    -- blink 会把这个返回值包进它自己的默认判断（宏录制 / 命令行 / terminal 模式），
+    -- 所以只写这一条不会动到那些行为。
+    enabled = function()
+      return not in_comment()
+    end,
+
+    completion = {
+      -- 不预选：菜单弹出时不会高亮第一项，避免 Enter 误插入
+      list = { selection = { preselect = false } },
+
+      trigger = {
+        -- 打字时（字母/数字/下划线）不自动弹菜单：
+        -- 定义变量名、函数名、类名时最烦的就是这个，一打就弹一堆 std 的东西。
+        -- 需要时按 Ctrl+空格 手动弹。
+        show_on_keyword = false,
+        -- 进插入模式时也不弹
+        show_on_insert = false,
+        -- 但 . -> :: 这类触发字符后面照旧自动弹（写成员访问时最有用）
+        show_on_trigger_character = true,
+      },
+    },
+    sources = {
+      -- 注释和字符串里都不弹补全：默认的 buffer 源会把文件里出现过的词
+      -- （注释词、字符串片段）也当候选，写注释/写字符串时菜单一直闪。
+      -- 想保留其中一部分源（比如字符串里的路径补全）：把 return {} 换成
+      -- { "lsp", "path", "snippets" }。
+      default = function(_)
+        local function inside_comment_or_string()
+          local ok, suppressed = pcall(function()
+            -- C/C++ 的 #include / #import 目标本身就是字符串字面量，
+            -- 这里必须放行，否则下面的 string 判定会把头文件补全一起干掉。
+            local line = vim.api.nvim_get_current_line()
+            local before = line:sub(1, vim.api.nvim_win_get_cursor(0)[2])
+            if before:match("^%s*#%s*include") or before:match("^%s*#%s*import") then
+              return false
+            end
+            -- `error = false`：没装对应解析器时返回 nil 而不是抛错。
+            local parser = vim.treesitter.get_parser(0, nil, { error = false })
+            if not parser then
+              return false
+            end
+            -- 增量解析：高亮器已经维护着语法树时这里几乎不花时间。
+            parser:parse()
+            local cursor = vim.api.nvim_win_get_cursor(0)
+            local row = cursor[1] - 1
+            -- 光标停在行尾时，那个位置本身不属于任何 token（C++ 里返回
+            -- translation_unit、Lua 里返回 chunk），但光标前一个字节还在注释/字符串里，
+            -- 而实际写注释正是这种"停在行尾"的状态，所以两个位置都要看。
+            for _, col in ipairs({ cursor[2], cursor[2] - 1 }) do
+              if col >= 0 then
+                local node = vim.treesitter.get_node({ bufnr = 0, pos = { row, col } })
+                -- 逐层往上找：Lua 注释里是 comment_content、字符串里是 string_content，
+                -- 只看当前节点类型会漏。
+                while node do
+                  local kind = node:type()
+                  if
+                    kind:find("comment", 1, true)
+                    or kind:find("string", 1, true)
+                    or kind == "char_literal"
+                    or kind == "character_literal"
+                  then
+                    return true
+                  end
+                  node = node:parent()
+                end
+              end
+            end
+            return false
+          end)
+          return ok and suppressed
+        end
+
+        if inside_comment_or_string() then
+          return {}
+        end
+
+        return { "lsp", "path", "snippets", "buffer" }
+      end,
+
+      -- C/C++：LSP + 路径 + buffer。
+      -- buffer 只扫当前这个文件里出现过的词，所以自己写的类名 / 变量名会排在
+      -- clangd 那堆 std:: 前面（靠下面 sources.providers.buffer.score_offset 加权）。
+      -- 代价：本文件出现过的词都会进来，写 calculator:: 时可能混进不属于该类的名字；
+      -- 嫌吵就把这里的 "buffer" 删掉，回到纯 LSP。
+      -- path 留着是为了 #include 头文件补全。
+      per_filetype = {
+        c = { "lsp", "path", "buffer" },
+        cpp = { "lsp", "path", "buffer" },
+        cuda = { "lsp", "path", "buffer" },
+        objc = { "lsp", "path", "buffer" },
+        objcpp = { "lsp", "path", "buffer" },
+      },
+
+      providers = {
+        -- LSP 的 snippet 补全一律降级成「只写标识符」（2026-11-09），
+        -- 同时把菜单里的同名重复项去掉、只显示名字（2026-11-11 加）。
+        -- 为什么：
+        --   clangd 对模板类给的是 newText = "AVLNode<${1:typename keyType}, ${2:typename valueType}>"，
+        --   接受后连模板实参一起写出来，而且那串本身不合法（clangd 自己会报
+        --   "Expected a qualified name after 'typename'"）。模板函数同理，形参表也一起塞进来；
+        --   std 里的 std::insert_iterator<${1:typename Container}> 也是这个毛病。
+        --   更烦的是同一个模板名 clangd 会返回十几条 item（kind 还不一样），label 全叫
+        --   unordered_map，差异只藏在 labelDetails 的模板参数表里 —— 菜单一眼看过去
+        --   全是「unordered_map<typename Key, typename Tp, typename Hash, ty…」。
+        --   既然现在只插名字，这些差异没有任何意义，全是噪声。
+        -- 做三件事：
+        --   1) 「名字紧跟 < 或 (」的 snippet 项 → 纯文本，只留名字（含 std:: 前缀）；
+        --      其它项（#include 路径、纯文本项、operator< 之类）原样不动；
+        --   2) 降级时把 label 也改成名字、清掉 labelDetails，菜单行不再是一长串模板参数；
+        --   3) 按 label 去重，同名只保留 clangd 排序最靠前的那条（重载也一起并掉）。
+        lsp = {
+          transform_items = function(_, items)
+            local Snippet = vim.lsp.protocol.InsertTextFormat.Snippet
+            local PlainText = vim.lsp.protocol.InsertTextFormat.PlainText
+            local out, seen = {}, {}
+            for _, item in ipairs(items) do
+              if item.insertTextFormat == Snippet then
+                local text_edit = item.textEdit
+                local text = (text_edit and text_edit.newText) or item.insertText
+                -- 名字（含 :: 限定与析构的 ~）后面紧跟 < 或 ( 才算模板实参/形参表
+                local name = text and text:match("^([%w_:~]+)%s*[<(]")
+                -- operator< / operator<< 会被上面的模式误截成 "operator"，跳过
+                if name and not name:find("^operator") then
+                  item.insertTextFormat = PlainText
+                  item.label = name
+                  item.labelDetails = nil
+                  if text_edit then
+                    text_edit.newText = name
+                  else
+                    item.insertText = name
+                  end
+                  -- 菜单过滤/排序仍按原名走
+                  item.filterText = item.filterText or name
+                end
+              end
+              -- 同名只留第一条（clangd 的 label 常带前导空格，比较前去掉）
+              local key = item.label or item.insertText or item.filterText
+              local keep = true
+              if key then
+                key = tostring(key):gsub("^%s+", "")
+                if seen[key] then
+                  keep = false
+                else
+                  seen[key] = true
+                end
+              end
+              if keep then
+                out[#out + 1] = item
+              end
+            end
+            return out
+          end,
+        },
+        buffer = {
+          -- 只给 C/C++ 加权（每 12 分压过 LSP 的排序分），别的语言不受影响。
+          score_offset = function()
+            local ft = vim.bo.filetype
+            if ft == "c" or ft == "cpp" or ft == "cuda" or ft == "objc" or ft == "objcpp" then
+              return 12
+            end
+            return 0
+          end,
+        },
+      },
+    },
+    keymap = {
+      -- 手动弹菜单 / 关菜单 / 上下选（自动弹关掉之后，这几个是主要操作方式）
+      -- Windows Terminal 里 Ctrl+空格 可能发成 NUL，<C-space> 和 <C-@> 都映射
+      ["<C-space>"] = { "show", "show_documentation", "hide_documentation" },
+      ["<C-@>"] = { "show", "show_documentation", "hide_documentation" },
+      ["<C-e>"] = { "hide", "fallback" },
+      ["<C-n>"] = { "select_next", "fallback" },
+      ["<C-p>"] = { "select_prev", "fallback" },
+
+      -- Tab：和 VSCode 一样，直接接受补全（没选中就用第一条）
+      --       菜单没开时退回 snippet 跳转 / 默认缩进
+      --       snippet 占位符里例外：只要没有手动选中某一项（C-n / C-p），
+      --       Tab 就只负责「跳下一个占位符」。否则占位符里一打字（菜单由
+      --       lua/config/autocmds.lua 的 250ms 定时器弹出），第一下 Tab 会被
+      --       select_and_accept 吃掉，表现就是要连按两下 Tab 才跳得过去。
+      ["<Tab>"] = {
+        function(cmp)
+          if cmp.snippet_active() and cmp.get_selected_item() == nil then
+            return false
+          end
+          return cmp.select_and_accept()
+        end,
+        "snippet_forward",
+        "fallback",
+      },
+      ["<S-Tab>"] = {
+        function(cmp)
+          if cmp.snippet_active({ direction = -1 }) and cmp.get_selected_item() == nil then
+            return false
+          end
+          return cmp.select_prev()
+        end,
+        "snippet_backward",
+        "fallback",
+      },
+
+      -- Enter：只有确实选中了某一项才接受补全；否则就是换行
+      ["<CR>"] = {
+        function(cmp)
+          if cmp.is_visible() and cmp.get_selected_item() ~= nil then
+            cmp.accept()
+            return true
+          end
+        end,
+        "fallback",
+      },
+
+      ["<C-y>"] = { "select_and_accept", "fallback" },
+    },
+  },
+
+  -- 菜单已经弹出来之后再走进注释时，光靠 enabled 未必收得回，
+  -- 所以在插入模式的每个动作后主动收一次（只在确实处于注释里时才动）。
+  init = function()
+    local group = vim.api.nvim_create_augroup("user.blink_comment_off", { clear = true })
+    vim.api.nvim_create_autocmd({ "CursorMovedI", "TextChangedI", "InsertEnter" }, {
+      group = group,
+      callback = function()
+        if not in_comment() then
+          return
+        end
+        local loaded, blink = pcall(require, "blink.cmp")
+        if not loaded or type(blink.is_visible) ~= "function" then
+          return
+        end
+        local visible_ok, visible = pcall(blink.is_visible)
+        if visible_ok and visible then
+          pcall(blink.hide)
+        end
+      end,
+    })
+  end,
+}

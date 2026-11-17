@@ -1,0 +1,104 @@
+-- Keymaps are automatically loaded on the VeryLazy event
+-- Default keymaps that are always set: https://github.com/LazyVim/LazyVim/blob/main/lua/lazyvim/config/keymaps.lua
+-- Add any additional keymaps here
+
+-- translate (port from vim-translator)
+vim.keymap.set("v", "<leader>tt", function()
+  require("translate").translate(require("translate").visual_text(), "zh-CN")
+end, { desc = "Translate selection -> 中文" })
+vim.keymap.set("n", "<leader>tt", function()
+  require("translate").translate(vim.fn.expand("<cword>"), "zh-CN")
+end, { desc = "Translate word -> 中文" })
+vim.keymap.set("v", "<leader>tr", function()
+  require("translate").replace("zh-CN")
+end, { desc = "Replace selection with 中文" })
+vim.keymap.set("v", "<leader>te", function()
+  require("translate").translate(require("translate").visual_text(), "en")
+end, { desc = "Translate selection -> English" })
+
+-- LSP: 跳转到定义（LazyVim 默认只给了 gr* 一组，补一个单键）
+vim.keymap.set("n", "<leader>gd", vim.lsp.buf.definition, { desc = "Goto Definition" })
+
+vim.keymap.set("i", "jk", "<ESC>")
+-- 插入模式 ----
+
+-- 视觉模式
+-- 单行或者多行移动
+vim.keymap.set("v", "J", ":m '>+1<CR>gv=gv")
+vim.keymap.set("v", "K", ":m '<-2<CR>gv=gv")
+
+
+-- ===== 行首 / 行尾 =====
+-- Alt-h / Alt-l：和 h/l 同方向，单键触发，不占用常用键
+vim.keymap.set({ "n", "x", "o" }, "<M-h>", "^", { desc = "行首（第一个非空白字符）" })
+-- Alt-l：行尾。普通模式停在最后一个字符之后（配合 virtualedit=onemore），
+-- 可视/操作符模式仍用 $（选区与操作范围保持原语义）
+vim.keymap.set("n", "<M-l>", function()
+  vim.cmd("normal! $")
+  pcall(vim.cmd, "normal! l")
+end, { desc = "行尾（最后一个字符之后）" })
+vim.keymap.set({ "x", "o" }, "<M-l>", "$", { desc = "行尾" })
+-- 0 仍指向第一个非空白字符；真正的第 0 列用 <Home> 或 g0
+vim.keymap.set({ "n", "x", "o" }, "0", "^", { desc = "行首（第一个非空白字符）" })
+
+-- ===== 终端里的 Shift+Enter（通常是 ESC + CR，即 <M-CR>）=====
+-- 让 Shift+Enter 和普通 Enter 行为一致
+vim.keymap.set("i", "<M-CR>", "<CR>", { desc = "Shift+Enter 同 Enter" })
+vim.keymap.set("i", "<S-CR>", "<CR>", { desc = "Shift+Enter 同 Enter" })
+
+-- show full diagnostics for the current line (works for non-LSP sources like markdownlint)
+vim.keymap.set("n", "<leader>dd", function()
+  vim.diagnostic.open_float({ border = "rounded", source = true, focusable = false })
+end, { desc = "Line diagnostics (float)" })
+
+-- translate and copy the result to the system clipboard
+vim.keymap.set("n", "<leader>ty", function()
+  local m = require("translate")
+  m.translate_and_copy(vim.fn.expand("<cword>"), "zh-CN")
+end, { desc = "Translate word -> clipboard" })
+vim.keymap.set("v", "<leader>ty", function()
+  local m = require("translate")
+  m.translate_and_copy(m.visual_text(), "zh-CN")
+end, { desc = "Translate selection -> clipboard" })
+
+-- Markdown 图片显示方式：内联常显 <-> 悬停浮窗（依赖 Pebrel 的 kitty 占位符支持）
+vim.keymap.set("n", "<leader>ui", function()
+  local doc = Snacks.image.config.doc
+  doc.inline = not doc.inline
+  local buf = vim.api.nvim_get_current_buf()
+  pcall(function() Snacks.image.doc.hover_close() end)
+  pcall(vim.api.nvim_clear_autocmds, { group = "snacks.image.doc." .. buf })
+  for name, ns in pairs(vim.api.nvim_get_namespaces()) do
+    if name:find("snacks.image.inline", 1, true) then
+      pcall(vim.api.nvim_buf_clear_namespace, buf, ns, 0, -1)
+    end
+  end
+  vim.b[buf].snacks_image_attached = nil
+  Snacks.image.doc.attach(buf)
+  Snacks.notify.info(("Markdown 图片：%s"):format(doc.inline and "内联常显" or "悬停浮窗"))
+end, { desc = "Toggle Markdown image inline/floating" })
+
+-- ===== 注释 / 取消注释（整行）=====
+-- x 模式：把选中的所有行注释掉；n 模式：注释光标所在行。
+-- 注释符取自当前 filetype 的 commentstring（// # -- /* */ …），
+-- 整个块已经注释过时再按一次是取消，保留原有缩进与换行。
+local comment = require("util.comment")
+local function comment_visual()
+  comment.toggle_visual()
+end
+local function comment_line()
+  comment.toggle_line()
+end
+
+vim.keymap.set("x", "<leader>c/", comment_visual, { desc = "注释/取消注释选中行" })
+vim.keymap.set("n", "<leader>c/", comment_line, { desc = "注释/取消注释当前行" })
+
+-- 终端能送出 Ctrl+/ 时（多数终端发 0x1f，nvim 认作 <C-_>）也绑上同一个功能。
+for _, lhs in ipairs({ "<C-/>", "<C-_>" }) do
+  pcall(vim.keymap.set, "x", lhs, comment_visual, { desc = "注释/取消注释选中行" })
+  pcall(vim.keymap.set, "n", lhs, comment_line, { desc = "注释/取消注释当前行" })
+end
+
+
+-- 跳跃动画原型（scratch/flyjump.lua）；不要时删掉这一行和 lua/flyjump.lua
+require("flyjump").setup()

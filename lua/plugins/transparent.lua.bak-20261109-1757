@@ -1,0 +1,57 @@
+-- 背景透明：tokyonight 原生 transparent 选项 + 事后兜底清掉剩余背景色
+-- 生效前提：终端本身要半透明（Windows Terminal 的 opacity），nvim 只负责把背景色清成 none
+return {
+  {
+    "folke/tokyonight.nvim",
+    opts = {
+      transparent = true,
+      styles = {
+        -- 侧边栏、浮动窗口也透明（默认只有主编辑区透明）
+        sidebars = "transparent",
+        floats = "transparent",
+      },
+    },
+  },
+  {
+    -- 换别的配色时也能透明：颜色方案加载完、以及 LazyVim 自己的 UI 高亮设置完之后再清一遍
+    "LazyVim/LazyVim",
+    init = function()
+      local groups = {
+        "Normal", "NormalNC", "NormalFloat", "FloatBorder", "FloatTitle",
+        "SignColumn", "StatusLine", "StatusLineNC", "TabLine", "TabLineFill",
+        "WinBar", "WinBarNC", "Folded", "FoldColumn", "CursorLine", "CursorLineNr",
+      }
+
+      local function transparent_bg()
+        for _, g in ipairs(groups) do
+          local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = g, link = false })
+          if ok and type(hl) == "table" and next(hl) then
+            hl.bg = nil
+            hl.ctermbg = nil
+            pcall(vim.api.nvim_set_hl, 0, g, hl)
+          end
+        end
+        if vim.o.winblend == 0 then
+          vim.o.winblend = 10
+        end
+      end
+
+      local aug = vim.api.nvim_create_augroup("user.transparent", { clear = true })
+      vim.api.nvim_create_autocmd({ "ColorScheme", "VimEnter", "UIEnter" }, {
+        group = aug,
+        callback = transparent_bg,
+      })
+      -- LazyVim 的 UI 高亮在 VeryLazy 之后才落定，这里再兜一次
+      vim.api.nvim_create_autocmd("User", {
+        group = aug,
+        pattern = "VeryLazy",
+        callback = transparent_bg,
+      })
+      vim.api.nvim_create_autocmd("User", {
+        group = aug,
+        pattern = "LazyLoad",
+        callback = transparent_bg,
+      })
+    end,
+  },
+}

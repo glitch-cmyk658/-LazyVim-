@@ -1,0 +1,86 @@
+return {
+  "saghen/blink.cmp",
+  opts = {
+    completion = {
+      -- 不预选：菜单弹出时不会高亮第一项，避免 Enter 误插入
+      list = { selection = { preselect = false } },
+    },
+    sources = {
+      -- 注释和字符串里都不弹补全：默认的 buffer 源会把文件里出现过的词
+      -- （注释词、字符串片段）也当候选，写注释/写字符串时菜单一直闪。
+      -- 想保留其中一部分源（比如字符串里的路径补全）：把 return {} 换成
+      -- { "lsp", "path", "snippets" }。
+      default = function(_)
+        local function inside_comment_or_string()
+          local ok, suppressed = pcall(function()
+            -- C/C++ 的 #include / #import 目标本身就是字符串字面量，
+            -- 这里必须放行，否则下面的 string 判定会把头文件补全一起干掉。
+            local line = vim.api.nvim_get_current_line()
+            local before = line:sub(1, vim.api.nvim_win_get_cursor(0)[2])
+            if before:match("^%s*#%s*include") or before:match("^%s*#%s*import") then
+              return false
+            end
+            -- `error = false`：没装对应解析器时返回 nil 而不是抛错。
+            local parser = vim.treesitter.get_parser(0, nil, { error = false })
+            if not parser then
+              return false
+            end
+            -- 增量解析：高亮器已经维护着语法树时这里几乎不花时间。
+            parser:parse()
+            local cursor = vim.api.nvim_win_get_cursor(0)
+            local row = cursor[1] - 1
+            -- 光标停在行尾时，那个位置本身不属于任何 token（C++ 里返回
+            -- translation_unit、Lua 里返回 chunk），但光标前一个字节还在注释/字符串里，
+            -- 而实际写注释正是这种"停在行尾"的状态，所以两个位置都要看。
+            for _, col in ipairs({ cursor[2], cursor[2] - 1 }) do
+              if col >= 0 then
+                local node = vim.treesitter.get_node({ bufnr = 0, pos = { row, col } })
+                -- 逐层往上找：Lua 注释里是 comment_content、字符串里是 string_content，
+                -- 只看当前节点类型会漏。
+                while node do
+                  local kind = node:type()
+                  if
+                    kind:find("comment", 1, true)
+                    or kind:find("string", 1, true)
+                    or kind == "char_literal"
+                    or kind == "character_literal"
+                  then
+                    return true
+                  end
+                  node = node:parent()
+                end
+              end
+            end
+            return false
+          end)
+          return ok and suppressed
+        end
+
+        if inside_comment_or_string() then
+          return {}
+        end
+
+        return { "lsp", "path", "snippets", "buffer" }
+      end,
+    },
+    keymap = {
+      -- Tab：和 VSCode 一样，直接接受补全（没选中就用第一条）
+      --       菜单没开时退回 snippet 跳转 / 默认缩进
+      ["<Tab>"] = { "select_and_accept", "snippet_forward", "fallback" },
+      ["<S-Tab>"] = { "select_prev", "snippet_backward", "fallback" },
+
+      -- Enter：只有确实选中了某一项才接受补全；否则就是换行
+      ["<CR>"] = {
+        function(cmp)
+          if cmp.is_visible() and cmp.get_selected_item() ~= nil then
+            cmp.accept()
+            return true
+          end
+        end,
+        "fallback",
+      },
+
+      ["<C-y>"] = { "select_and_accept", "fallback" },
+    },
+  },
+}

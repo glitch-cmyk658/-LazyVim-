@@ -1,0 +1,134 @@
+-- C/C++ 断点调试（nvim-dap + codelldb）
+-- 依赖：lazyvim.plugins.extras.dap.core（在 lua/config/lazy.lua 里导入）
+-- codelldb：用 mason 装（:MasonInstall codelldb），已装则跳过
+-- 按键：空格 d b 打/取消断点，空格 d c 开始/继续，空格 d i/o/O 单步，
+--       空格 d u 开关调试面板（变量/调用栈/断点/REPL），空格 d t 结束
+-- 启动方式（2026-11-17 用户要求）：
+--   :DapRun -r tests/simple.txt   ← 命令里一次写全参数（推荐，不再弹提示框）
+--   空格 d c                      ← 不带参数 / 之前那条「启动时提示参数」的旧路，仍然可用
+-- 注意：关掉 mason-nvim-dap，否则它会往 c/cpp 里再塞 "LLDB: Launch" 配置，
+--       启动调试时要多选一次；这里只要能跑当前文件就够了。
+return {
+  {
+    "jay-babu/mason-nvim-dap.nvim",
+    enabled = false,
+  },
+  {
+    "mfussenegger/nvim-dap",
+    -- 让 :DapRun 在插件还没加载时就存在（输入命令会触发懒加载，再执行真正的实现）。
+    cmd = { "DapRun" },
+    opts = function()
+      local dap = require("dap")
+
+      local candidates = {
+        vim.fn.stdpath("data") .. "/mason/bin/codelldb",
+        vim.fn.expand("~/.local/share/codelldb/extension/adapter/codelldb"),
+      }
+      local adapter_bin = candidates[1]
+      for _, p in ipairs(candidates) do
+        if vim.fn.executable(p) == 1 then
+          adapter_bin = p
+          break
+        end
+      end
+
+      dap.adapters.codelldb = {
+        type = "server",
+        port = "${port}",
+        executable = {
+          command = adapter_bin,
+          args = { "--port", "${port}" },
+        },
+      }
+
+      -- 默认的可执行文件：同目录下和源文件同名的可执行文件，没有就让你填
+      local function pick_program()
+        local file = vim.api.nvim_buf_get_name(0)
+        local dir = vim.fn.fnamemodify(file, ":p:h")
+        local base = vim.fn.fnamemodify(file, ":t:r")
+        local guess = dir .. "/" .. base
+        if vim.fn.executable(guess) == 1 then
+          return guess
+        end
+        return vim.fn.input("可执行文件: ", dir .. "/a.out", "file")
+      end
+
+      -- 源文件比可执行文件新时自动 make。
+      -- 现象（2026-11-17 排查）：改完源码没重新 make，直接启动调试，断点一个都命不中，
+      -- 程序自己跑完就退，看起来像「调试器坏了」。原因：断点按当前源码行号发给 lldb，
+      -- 但二进制里根本没有那些行（旧版本编译的）→ lldb 判定断点没绑定。
+      local function rebuild_if_stale(program, dir)
+        if vim.fn.filereadable(dir .. "/Makefile") == 0 then
+          return
+        end
+        local src = vim.api.nvim_buf_get_name(0)
+        if vim.fn.getftime(program) >= vim.fn.getftime(src) then
+          return
+        end
+        local out = vim.fn.system({ "make", "-C", dir })
+        if vim.v.shell_error ~= 0 then
+          vim.notify("重新编译失败：\n" .. out, vim.log.levels.ERROR)
+        else
+          vim.notify("源码比二进制新，已自动重新编译", vim.log.levels.INFO)
+        end
+      end
+
+      -- 旧路（空格 d c）启动前问一次参数；回车=不带参数，上次填的会预填。
+      -- 为什么保留：不写命令时也能启动；需要参数时用 :DapRun 更省事。
+      local function pick_args()
+        local last = vim.b.dap_args or ""
+        local s = vim.fn.input("程序参数（空格分隔，直接回车=不带）: ", last, "file")
+        vim.b.dap_args = s
+        return vim.split(s, " ", { trimempty = true })
+      end
+
+      local function make_config(args)
+        local program = pick_program()
+        local dir = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ":p:h")
+        rebuild_if_stale(program, dir)
+        return {
+          name = "启动当前程序（codelldb）",
+          type = "codelldb",
+          request = "launch",
+          program = program,
+          args = args,
+          cwd = dir,
+          stopOnEntry = false,
+        }
+      end
+
+      for _, lang in ipairs({ "c", "cpp" }) do
+        dap.configurations[lang] = {
+          {
+            name = "启动当前程序（codelldb）",
+            type = "codelldb",
+            request = "launch",
+            program = pick_program,
+            args = pick_args,
+            cwd = "${workspaceFolder}",
+            stopOnEntry = false,
+          },
+        }
+      end
+
+      -- 命令形式启动：:DapRun -r tests/simple.txt / :DapRun（不带参数）
+      -- 为什么用命令：启动参数（输入文件、-r 之类的选项）每次都要重填提示框太麻烦，
+      -- 写在一行命令里，↑ 历史还能直接复用（2026-11-17 用户提的）。
+      vim.api.nvim_create_user_command("DapRun", function(o)
+        local args = o.fargs
+        vim.b.dap_args = table.concat(args, " ")
+        -- 上一次会话没停住/没关干净时直接再 launch 会复用坏状态，先关掉。
+        if dap.session() then
+          pcall(function()
+            dap.terminate()
+          end)
+        end
+        dap.run(make_config(args))
+      end, {
+        nargs = "*",
+        complete = "file",
+        desc = "带参数启动调试，例如 :DapRun -r tests/simple.txt",
+      })
+    end,
+  },
+}

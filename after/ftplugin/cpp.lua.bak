@@ -1,0 +1,46 @@
+-- 2026-10-26 - DSH - 打 { 时若当前行是 class/struct/enum/union 声明，直接补出 {}; 光标留在中间
+-- 踩坑：映射必须在 InsertEnter 重设（否则被 autopairs 盖掉）；expr 回调里不能改 buffer（E565）。
+-- 做法：返回真正的按键序列（已用 nvim_replace_termcodes 转义），交给 Neovim 当输入处理。
+local ok, npairs = pcall(require, "nvim-autopairs")
+
+local function keys(s)
+  return vim.api.nvim_replace_termcodes(s, true, false, true)
+end
+
+local function is_type_decl(line)
+  return line:match("^%s*class%s")
+    or line:match("^%s*struct%s")
+    or line:match("^%s*enum%s")
+    or line:match("^%s*union%s")
+end
+
+local function before_cursor()
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  return vim.api.nvim_get_current_line():sub(1, col)
+end
+
+local function install(bufnr)
+  vim.keymap.set("i", "{", function()
+    if is_type_decl(before_cursor()) then
+      return keys("{};<Left><Left>")
+    end
+    if ok then return npairs.autopairs_map(bufnr, "{") end
+    return keys("{}<Left>")
+  end, { expr = true, buffer = bufnr, replace_keycodes = false, desc = "dsh-semicolon-open" })
+
+  vim.keymap.set("i", "}", function()
+    local col = vim.api.nvim_win_get_cursor(0)[2]
+    local after = vim.api.nvim_get_current_line():sub(col + 1)
+    if after:match("^}%s*;") then
+      return keys("<Right><Right>")
+    end
+    if ok then return npairs.autopairs_map(bufnr, "}") end
+    return "}"
+  end, { expr = true, buffer = bufnr, replace_keycodes = false, desc = "dsh-semicolon-close" })
+end
+
+install(0)
+vim.api.nvim_create_autocmd("InsertEnter", {
+  buffer = 0,
+  callback = function(ev) install(ev.buf) end,
+})

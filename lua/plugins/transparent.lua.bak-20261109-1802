@@ -1,0 +1,108 @@
+-- 背景透明：tokyonight 原生 transparent 选项 + 事后兜底清掉剩余背景色
+-- 生效前提：终端本身要半透明（Windows Terminal 的 opacity），nvim 只负责把背景色清成 none
+--
+-- 浮窗例外（2026-11-09）：主编辑区、侧边栏继续透明；签名帮助、补全菜单这类浮窗必须留实色底。
+-- 原来 NormalFloat / FloatBorder / FloatTitle 也在清零名单里，浮窗没有底色，它盖在代码上时
+-- 下面的代码行和行内诊断（clangd 的 "Too few arguments ..."）会从空隙里透出来，两段文字
+-- 叠成鬼画符；再叠上 winblend = 10 更明显。见 docs/nvim-pitfalls.md「浮窗透明导致提示叠字」。
+return {
+  {
+    "folke/tokyonight.nvim",
+    opts = {
+      transparent = true,
+      styles = {
+        -- 侧边栏透明；浮窗用暗底（不再 "transparent"），保证浮窗背景是实色
+        sidebars = "transparent",
+        floats = "dark",
+      },
+    },
+  },
+  {
+    -- 换别的配色时也能透明：颜色方案加载完、以及 LazyVim 自己的 UI 高亮设置完之后再清一遍
+    "LazyVim/LazyVim",
+    init = function()
+      -- 主编辑区 / 侧边栏：背景清成 none，让终端底色透上来
+      local groups = {
+        "Normal", "NormalNC",
+        "SignColumn", "StatusLine", "StatusLineNC", "TabLine", "TabLineFill",
+        "WinBar", "WinBarNC", "Folded", "FoldColumn", "CursorLine", "CursorLineNr",
+      }
+
+      -- 浮窗相关：这些必须有不透明底色。
+      -- NormalFloat/FloatBorder/FloatTitle 是 nvim 自带的浮窗组；
+      -- BlinkCmp* 是补全菜单（blink 的组不链接 NormalFloat，得单独给）；
+      -- NoicePopup* 是 noice 渲染的 LSP 浮窗（签名帮助就是它，winhl 里用的是这个名字，
+      -- 但 noice 直到第一次弹窗才建组，没建出来时等于全透明）。
+      local float_groups = {
+        "NormalFloat", "FloatBorder", "FloatTitle",
+        "BlinkCmpMenu", "BlinkCmpMenuBorder", "BlinkCmpSignatureHelp",
+        "NoicePopup", "NoicePopupBorder",
+      }
+
+      -- 找一个"不是 none"的底色给浮窗用：主题里 Pmenu 通常保留底色（tokyonight 是 #1e2030），
+      -- 拿不到才按明暗主题兜底。不能直接读 Normal：transparent = true 时它加载完就已经是 none。
+      local function float_bg()
+        for _, name in ipairs({ "Pmenu", "NormalFloat", "Normal" }) do
+          local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+          if ok and type(hl) == "table" and hl.bg then
+            return hl.bg
+          end
+        end
+        return vim.o.background == "dark" and 0x1e2030 or 0xe6e7ed
+      end
+
+      local function opaque_floats()
+        local bg = float_bg()
+        for _, name in ipairs(float_groups) do
+          local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+          if not ok or type(hl) ~= "table" then
+            hl = {}
+          end
+          -- 链接组不能直接改 bg（改了也不生效），它的底色由被链接的那个组负责
+          if not hl.link then
+            hl.bg = bg
+            hl.ctermbg = nil
+            pcall(vim.api.nvim_set_hl, 0, name, hl)
+          end
+        end
+      end
+
+      local function transparent_bg()
+        for _, g in ipairs(groups) do
+          local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = g, link = false })
+          if ok and type(hl) == "table" and next(hl) then
+            hl.bg = nil
+            hl.ctermbg = nil
+            pcall(vim.api.nvim_set_hl, 0, g, hl)
+          end
+        end
+        if vim.o.winblend == 0 then
+          vim.o.winblend = 10
+        end
+      end
+
+      local function refresh()
+        -- 先给浮窗上色再清主区，避免读到已经被清成 none 的组
+        opaque_floats()
+        transparent_bg()
+      end
+
+      local aug = vim.api.nvim_create_augroup("user.transparent", { clear = true })
+      vim.api.nvim_create_autocmd({ "ColorScheme", "VimEnter", "UIEnter" }, {
+        group = aug,
+        callback = refresh,
+      })
+      -- LazyVim 的 UI 高亮在 VeryLazy 之后才落定，这里再兜一次
+      vim.api.nvim_create_autocmd("User", {
+        group = aug,
+        pattern = "VeryLazy",
+        callback = refresh,
+      })
+      vim.api.nvim_create_autocmd("User", {
+        group = aug,
+        pattern = "LazyLoad",
+        callback = refresh,
+      })
+    end,
+  },
+}
